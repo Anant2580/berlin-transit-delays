@@ -4,3 +4,5 @@ __pycache__/
 collector/stations.cache.json
 exports/
 .DS_Store
+.pytest_cache/
+.ruff_cache/

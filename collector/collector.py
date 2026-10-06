@@ -128,7 +128,8 @@ def resolve_stations(conn):
             log.warning("Lookup for '%s' failed (%s), will retry next cycle", query, exc.__class__.__name__)
             fails_in_row += 1
             if fails_in_row >= MAX_FAILS_IN_ROW:
-                log.warning("API seems down (%d lookups failed in a row), pausing lookups until next cycle", fails_in_row)
+                log.warning("API seems down (%d lookups failed in a row), pausing lookups until next cycle",
+                            fails_in_row)
                 api_down = True
             time.sleep(REQUEST_PAUSE_SECONDS)
             continue
@@ -266,7 +267,7 @@ def run_once(conn, stations):
 
 def connect_with_retry():
     """The database container may need a few seconds to start, so keep trying."""
-    for attempt in range(1, 31):
+    for _attempt in range(30):
         try:
             return psycopg.connect(DATABASE_URL)
         except psycopg.OperationalError as exc:

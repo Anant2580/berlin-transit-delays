@@ -1,0 +1,11 @@
+# Tool settings for linting (ruff) and tests (pytest). The app itself is run with Docker.
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, bugbear, import sorting
+select = ["E", "F", "W", "B", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
