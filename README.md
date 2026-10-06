@@ -99,6 +99,15 @@ The only thing you need is **Docker Desktop**.
 
 The collector only runs while the computer is awake. On a Mac, keep it plugged in and run `caffeinate -s` in a second terminal.
 
+### Run it 24/7 on a cloud server
+
+`deploy/cloud-init.yaml` sets up a fresh Ubuntu 24.04 server automatically: paste it into the "cloud config" / "user data" field when creating the server. It installs Docker, downloads this repository, generates a random database password and starts both services, which restart on their own after a reboot.
+
+The database port is only reachable from the server itself. To query it from your laptop, open an SSH tunnel and connect to `localhost:5432` as usual (the password is in `/opt/berlin-transit-delays/.env` on the server):
+```bash
+ssh -L 5432:localhost:5432 root@<server-ip>
+```
+
 ### Using the data
 
 ```bash
@@ -139,6 +148,7 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 │   ├── requirements.txt
 │   └── Dockerfile
 ├── db/init/01_schema.sql   # tables, indexes and the analysis view
+├── deploy/cloud-init.yaml  # one-step setup of a cloud server
 ├── sql/kpis.sql            # KPI queries
 ├── tests/                  # pytest: parsing, upsert logic, view, KPI queries
 ├── .github/workflows/      # CI: lint + tests against PostgreSQL 16

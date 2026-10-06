@@ -1,0 +1,25 @@
+#cloud-config
+# Sets up a fresh Ubuntu 24.04 server to run the collector 24/7.
+# Paste this file into the "Cloud config" / "User data" box when creating the server.
+# What it does: installs Docker and git, downloads this project, creates a .env file with a
+# random database password, and starts the database and collector. Containers restart
+# automatically after a reboot (restart: unless-stopped in docker-compose.yml).
+
+package_update: true
+package_upgrade: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - git
+
+runcmd:
+  - systemctl enable --now docker
+  - git clone https://github.com/Anant2580/berlin-transit-delays.git /opt/berlin-transit-delays
+  - >-
+    cd /opt/berlin-transit-delays
+    && cp .env.example .env
+    && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
+    && chmod 600 .env
+    && docker compose up -d --build
+
+final_message: "berlin-transit-delays is running. Check with: cd /opt/berlin-transit-delays && docker compose ps"

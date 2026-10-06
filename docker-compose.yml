@@ -8,7 +8,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-transit}
       TZ: Europe/Berlin
     ports:
-      - "5432:5432"          # lets you connect from your laptop (DBeaver, Tableau, psql, Python)
+      # Only reachable from this machine (DBeaver, Tableau, psql, Python on localhost).
+      # On a cloud server, connect through an SSH tunnel instead of opening the port to the internet.
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data          # data survives restarts
       - ./db/init:/docker-entrypoint-initdb.d:ro  # creates tables on first start
