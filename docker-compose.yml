@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-transit}
+      POSTGRES_USER: ${POSTGRES_USER:-transit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-transit}
+      TZ: Europe/Berlin
+    ports:
+      - "5432:5432"          # lets you connect from your laptop (DBeaver, Tableau, psql, Python)
+    volumes:
+      - pgdata:/var/lib/postgresql/data          # data survives restarts
+      - ./db/init:/docker-entrypoint-initdb.d:ro  # creates tables on first start
+      - ./sql:/sql:ro                              # KPI queries, run with psql -f
+      - ./exports:/exports                         # CSV exports for Tableau / Excel
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-transit} -d ${POSTGRES_DB:-transit}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  collector:
+    build: ./collector
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-transit}:${POSTGRES_PASSWORD:-transit}@db:5432/${POSTGRES_DB:-transit}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-300}
+      LOOKAHEAD_MINUTES: ${LOOKAHEAD_MINUTES:-10}
+      STATIONS_FILE: /app/stations.txt
+
+volumes:
+  pgdata:

@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+collector/stations.cache.json
+exports/
+.DS_Store

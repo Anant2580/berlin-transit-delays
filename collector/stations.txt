@@ -1,0 +1,36 @@
+# Stations to track, one per line. The collector looks up each name in the VBB API.
+# Check the log after the first start to see which stop each line matched.
+# Lines starting with # are ignored.
+
+# Big hubs (S-Bahn, U-Bahn, regional trains)
+S+U Alexanderplatz
+S+U Friedrichstraße
+S+U Berlin Hauptbahnhof
+S+U Zoologischer Garten
+S+U Potsdamer Platz
+S Ostkreuz
+S+U Warschauer Straße
+S+U Gesundbrunnen
+S Südkreuz
+S+U Lichtenberg
+S+U Jungfernheide
+S Westkreuz
+
+# U-Bahn and bus focus
+S+U Hermannplatz
+U Kottbusser Tor
+U Mehringdamm
+U Kurfürstendamm
+S+U Rathaus Steglitz
+S+U Neukölln
+
+# Tram focus (east)
+S Hackescher Markt
+S+U Schönhauser Allee
+S Frankfurter Allee
+S+U Pankow
+
+# Outer areas
+S Spandau
+S Treptower Park
+S+U Wedding
