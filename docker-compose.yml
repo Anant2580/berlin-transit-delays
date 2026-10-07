@@ -34,5 +34,36 @@ services:
       LOOKAHEAD_MINUTES: ${LOOKAHEAD_MINUTES:-10}
       STATIONS_FILE: /app/stations.txt
 
+  dashboard:
+    build: ./dashboard
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Read-only database user created by db/migrations/003_dashboard_role.sql
+      DATABASE_URL: postgresql://dashboard:${DASHBOARD_DB_PASSWORD:-}@db:5432/${POSTGRES_DB:-transit}
+    ports:
+      - "127.0.0.1:8501:8501"   # http://localhost:8501 on this machine
+
+  # Public HTTPS for the dashboard. Only runs on the cloud server (COMPOSE_PROFILES=public in .env).
+  caddy:
+    image: caddy:2
+    profiles: ["public"]
+    restart: unless-stopped
+    depends_on:
+      - dashboard
+    environment:
+      DASHBOARD_HOST: ${DASHBOARD_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

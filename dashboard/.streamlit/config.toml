@@ -1,0 +1,12 @@
+[server]
+headless = true
+enableCORS = false
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#2a78d6"
+
+[client]
+toolbarMode = "viewer"

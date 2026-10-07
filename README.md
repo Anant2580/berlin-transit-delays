@@ -17,6 +17,7 @@ Berlin's GTFS timetable files only contain the *planned* schedule, not real dela
 - **Fault tolerance**: timeouts, retries with exponential backoff, and a circuit breaker keep the collector running when the public API is slow or down.
 - **Data quality built in**: every collector run is logged, so gaps, failed requests and realtime coverage can be measured.
 - **SQL analytics**: KPI queries with CTEs, window functions (`LAG`, `RANK`, rolling averages) and percentiles.
+- **Live dashboard**: a Streamlit app reads straight from PostgreSQL through a read-only user and refreshes every 5 minutes, served over HTTPS from a cloud VM.
 - **Tested**: unit tests for parsing, plus tests of the upsert logic, view and KPI queries against a real PostgreSQL in GitHub Actions.
 
 ## Architecture
@@ -28,13 +29,15 @@ flowchart LR
     DB --> V["View v_departures_clean"]
     V --> K["SQL KPIs<br/>sql/kpis.sql"]
     V --> E["CSV export<br/>Tableau / pandas"]
-    K -.-> D["Dashboard<br/>(planned)"]
+    V --> D["Live dashboard<br/>Streamlit + Plotly"]
+    D --> W["HTTPS via Caddy<br/>Oracle Cloud VM"]
 ```
 
 - **Collector** (`collector/collector.py`): every 5 minutes it asks the API for the next 10 minutes of departures at each station. Each sighting updates the same row, so the stored delay is the latest realtime value before the vehicle leaves.
 - **Reliability**: requests time out after 30 s and are retried with exponential backoff (2, 4, 8 s). A station that still fails is skipped and retried in the next cycle. After 3 failed stations in a row the collector assumes the API is down and waits for the next cycle (circuit breaker) instead of crashing.
 - **Database** (`db/init/01_schema.sql`): one row per departure (trip × station × planned time), a `stations` table, and a `collector_runs` table that logs every run.
-- **Analysis** (`sql/kpis.sql`): KPI queries built on the view `v_departures_clean`.
+- **Analysis** (`sql/kpis.sql`): KPI queries built on the view `v_departures_clean`. Schema changes after the first start are applied as idempotent migrations (`db/migrations/`).
+- **Dashboard** (`dashboard/app.py`): KPIs, on-time % by mode and by hour of day, the lines with the highest average delay, a station map and the most delayed departures of the last hour. Filters for time window and transport mode.
 
 ## First results (preliminary)
 
@@ -73,11 +76,14 @@ Departures without realtime data are excluded from delay and on-time KPIs but co
 - **Delay = last realtime forecast.** The collector sees a departure up to 10 minutes before it leaves, so the stored delay is the last forecast before departure, not a measured final delay.
 - **Collecting it myself instead of using GTFS.** Public GTFS feeds only have planned times; realtime history is not published, so it has to be recorded.
 - **Gaps are expected and visible.** When the computer is off or the API is down, nothing is collected. `collector_runs` makes these gaps measurable (KPI query 2), so they can be excluded from analysis rather than silently biasing it.
+- **Excluding collection gaps.** A departure planned while the collector was down is only seen afterwards if it was late, which would bias delays upwards. The view marks departures with no collector run in the 15 minutes before them (`in_coverage`), and the dashboard leaves them out.
+- **Separate modes for special services.** Rail replacement buses (a bus running as "S7") and long-distance trains get their own categories instead of distorting regular bus and regional train figures.
+- **Least privilege.** The public dashboard connects with a read-only database user, and the database port is only reachable from the server itself.
 - **Station selection.** 25 stations chosen to cover hubs, U-Bahn, tram and outer areas; the list is easy to change in `collector/stations.txt`.
 
 ## Tech stack
 
-Python 3.12 (requests, psycopg 3) · PostgreSQL 16 · Docker Compose · SQL (CTEs, window functions) · pytest · ruff · GitHub Actions
+Python 3.12 (requests, psycopg 3, pandas) · PostgreSQL 16 · SQL (CTEs, window functions) · Streamlit · Plotly · Docker Compose · Caddy · Oracle Cloud (Ubuntu, cloud-init) · pytest · ruff · GitHub Actions
 
 ## Run it yourself
 
@@ -87,10 +93,11 @@ The only thing you need is **Docker Desktop**.
    ```bash
    cp .env.example .env
    ```
-2. Start the database and the collector:
+2. Start the database, the collector and the dashboard (this also applies the database migrations):
    ```bash
-   docker compose up -d --build
+   ./deploy/update.sh
    ```
+   The dashboard is then at http://localhost:8501.
 3. Watch the collector work (Ctrl+C stops watching, the collector keeps running):
    ```bash
    docker compose logs -f collector
@@ -101,11 +108,16 @@ The collector only runs while the computer is awake. On a Mac, keep it plugged i
 
 ### Run it 24/7 on a cloud server
 
-`deploy/cloud-init.yaml` sets up a fresh Ubuntu 24.04 server automatically: paste it into the "cloud config" / "user data" field when creating the server. It installs Docker, downloads this repository, generates a random database password and starts both services, which restart on their own after a reboot.
+`deploy/cloud-init.yaml` sets up a fresh Ubuntu 24.04 server automatically: paste it into the "cloud config" / "user data" field when creating the server. It installs Docker, downloads this repository, generates random database passwords and runs `deploy/update.sh --public`, which also serves the dashboard over HTTPS at `https://<server-ip-with-dashes>.sslip.io` (a free certificate from Let's Encrypt via Caddy). All services restart on their own after a reboot. Ports 80 and 443 must be allowed in the cloud provider's firewall.
+
+To update a running server to the latest code:
+```bash
+ssh ubuntu@<server-ip> "sudo /opt/berlin-transit-delays/deploy/update.sh --public"
+```
 
 The database port is only reachable from the server itself. To query it from your laptop, open an SSH tunnel and connect to `localhost:5432` as usual (the password is in `/opt/berlin-transit-delays/.env` on the server):
 ```bash
-ssh -L 5432:localhost:5432 root@<server-ip>
+ssh -L 5432:localhost:5432 ubuntu@<server-ip>
 ```
 
 ### Using the data
@@ -147,8 +159,16 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 │   ├── stations.txt        # the 25 stations to track
 │   ├── requirements.txt
 │   └── Dockerfile
-├── db/init/01_schema.sql   # tables, indexes and the analysis view
-├── deploy/cloud-init.yaml  # one-step setup of a cloud server
+├── dashboard/
+│   ├── app.py              # live Streamlit dashboard
+│   └── Dockerfile
+├── db/
+│   ├── init/01_schema.sql  # tables, indexes and the analysis view (first start)
+│   └── migrations/         # later schema changes, applied by deploy/update.sh
+├── deploy/
+│   ├── cloud-init.yaml     # one-step setup of a cloud server
+│   ├── update.sh           # pull, migrate and restart with one command
+│   └── Caddyfile           # HTTPS for the public dashboard
 ├── sql/kpis.sql            # KPI queries
 ├── tests/                  # pytest: parsing, upsert logic, view, KPI queries
 ├── .github/workflows/      # CI: lint + tests against PostgreSQL 16
@@ -159,7 +179,7 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 
 - [x] Step 1: Collect live departures into PostgreSQL
 - [ ] Step 2: Schedule the collection with Apache Airflow
-- [ ] Step 3: Interactive dashboard (on-time %, worst lines and stations, delays by hour)
+- [x] Step 3: Live dashboard (on-time %, worst lines and stations, delays by hour), deployed on a cloud VM
 - [ ] Step 4: Predict delays with machine learning and explain the predictions with SHAP
 
 ## Data source

@@ -102,6 +102,7 @@ def conn():
         cur.execute("DROP VIEW IF EXISTS v_departures_clean")
         cur.execute("DROP TABLE IF EXISTS departures, collector_runs, stations")
         cur.execute((ROOT / "db/init/01_schema.sql").read_text())
+        cur.execute((ROOT / "db/migrations/002_modes_and_coverage.sql").read_text())
         cur.execute("INSERT INTO stations (station_id, name) VALUES ('900120003', 'S Ostkreuz Bhf (Berlin)')")
     connection.commit()
     yield connection
@@ -160,3 +161,33 @@ def test_kpi_queries_run(conn):
         for query in queries:
             cur.execute(query)
             cur.fetchall()
+
+
+@pytest.mark.parametrize("line, product, expected", [
+    ("S7", "bus", "Replacement bus"),
+    ("SEV U2", "bus", "Replacement bus"),
+    ("M41", "bus", "Bus"),
+    ("S7", "suburban", "S-Bahn"),
+    ("ICE 930", "express", "Long-distance"),
+])
+def test_view_mode_categories(conn, line, product, expected):
+    """Rail replacement buses and long-distance trains get their own mode."""
+    planned = (datetime.now(BERLIN) - timedelta(hours=1)).replace(microsecond=0).isoformat()
+    save(conn, make_departure(planned=planned, line={"name": line, "product": product}))
+    with conn.cursor() as cur:
+        cur.execute("SELECT mode FROM v_departures_clean")
+        assert cur.fetchone()[0] == expected
+
+
+def test_view_excludes_departures_planned_while_collector_was_down(conn):
+    """in_coverage is TRUE only if the collector ran in the 15 minutes before the planned time."""
+    planned = datetime.now(BERLIN).replace(microsecond=0) - timedelta(hours=2)
+    save(conn, make_departure("COVERED", planned=planned.isoformat()))
+    save(conn, make_departure("GAP", planned=(planned - timedelta(hours=1)).isoformat()))
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO collector_runs (started_at, finished_at, stations_ok, stations_failed, departures_upserted)"
+            " VALUES (%s, %s, 25, 0, 100)", (planned - timedelta(minutes=5), planned - timedelta(minutes=4)),
+        )
+        cur.execute("SELECT trip_id, in_coverage FROM v_departures_clean ORDER BY trip_id")
+        assert cur.fetchall() == [("COVERED", True), ("GAP", False)]

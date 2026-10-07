@@ -1,0 +1,6 @@
+# Public HTTPS entry point for the dashboard (only started with COMPOSE_PROFILES=public).
+# Caddy gets a free Let's Encrypt certificate for DASHBOARD_HOST automatically.
+{$DASHBOARD_HOST} {
+	encode gzip
+	reverse_proxy dashboard:8501
+}

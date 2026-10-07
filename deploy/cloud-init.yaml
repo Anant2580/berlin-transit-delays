@@ -2,7 +2,7 @@
 # Sets up a fresh Ubuntu 24.04 server to run the collector 24/7.
 # Paste this file into the "Cloud config" / "User data" box when creating the server.
 # What it does: installs Docker and git, downloads this project, creates a .env file with a
-# random database password, and starts the database and collector. Containers restart
+# random database password, and starts the database, collector and public dashboard. Containers restart
 # automatically after a reboot (restart: unless-stopped in docker-compose.yml).
 
 package_update: true
@@ -20,6 +20,6 @@ runcmd:
     && cp .env.example .env
     && sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env
     && chmod 600 .env
-    && docker compose up -d --build
+    && ./deploy/update.sh --public
 
 final_message: "berlin-transit-delays is running. Check with: cd /opt/berlin-transit-delays && docker compose ps"
