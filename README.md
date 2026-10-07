@@ -6,6 +6,8 @@
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
+**🟢 Live dashboard: [130-61-138-4.sslip.io](https://130-61-138-4.sslip.io)** (updates every 5 minutes)
+
 **How punctual is Berlin's public transport really?** This project collects live departure data for 25 Berlin stations every 5 minutes, stores planned and actual departure times in PostgreSQL, and turns them into KPIs such as on-time percentage, average delay per line and the most delayed stations.
 
 Berlin's GTFS timetable files only contain the *planned* schedule, not real delays. To measure punctuality, the project collects realtime data itself and builds up its own history.
