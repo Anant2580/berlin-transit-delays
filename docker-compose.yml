@@ -1,3 +1,38 @@
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-}@db:5432/airflow
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+  AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-}
+  AIRFLOW__API_AUTH__JWT_ISSUER: airflow
+  AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DEFAULT_TIMEZONE: Europe/Berlin
+  AIRFLOW__CORE__PARALLELISM: "4"
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  # Used by the DAGs: the transit database and the mounted collector code / SQL files
+  DATABASE_URL: postgresql://${POSTGRES_USER:-transit}:${POSTGRES_PASSWORD:-transit}@db:5432/${POSTGRES_DB:-transit}
+  COLLECTOR_DIR: /opt/airflow/collector
+  STATIONS_FILE: /opt/airflow/collector/stations.txt
+  STATIONS_CACHE: /tmp/stations.cache.json
+  SQL_DIR: /opt/airflow/sql
+
+x-airflow-common: &airflow-common
+  build: ./airflow
+  image: berlin-transit-airflow:3.3.2
+  profiles: ["airflow"]
+  restart: unless-stopped
+  environment: *airflow-env
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags:ro
+    - ./collector:/opt/airflow/collector:ro
+    - ./sql:/opt/airflow/sql:ro
+    - airflow_logs:/opt/airflow/logs
+  depends_on:
+    db:
+      condition: service_healthy
+
 services:
   db:
     image: postgres:16
@@ -22,8 +57,11 @@ services:
       timeout: 5s
       retries: 10
 
+  # Standalone collector (a Python loop). Used locally; on the server Airflow runs the
+  # collection instead (profile "airflow"), so only one of the two collects at a time.
   collector:
     build: ./collector
+    profiles: ["collector"]
     restart: unless-stopped
     depends_on:
       db:
@@ -63,7 +101,54 @@ services:
       - caddy_data:/data
       - caddy_config:/config
 
+  # ---------------------------------------------------------------------------
+  # Apache Airflow (profile "airflow"): schedules the collection every 5 minutes and the
+  # nightly data-quality checks and statistics. Lean setup for a small server:
+  # LocalExecutor (tasks run inside the scheduler), no Redis or Celery workers,
+  # metadata in its own "airflow" database on the existing PostgreSQL.
+  # ---------------------------------------------------------------------------
+  airflow-init:
+    <<: *airflow-common
+    command: version          # the image entrypoint migrates the DB and creates the admin user first
+    restart: "no"
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-}
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "127.0.0.1:8080:8080"   # web UI only on the server itself: open it through an SSH tunnel
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
   caddy_data:
   caddy_config:
+  airflow_logs:

@@ -33,6 +33,9 @@ LOOKAHEAD_MINUTES = int(os.getenv("LOOKAHEAD_MINUTES", "10"))           # depart
 REQUEST_PAUSE_SECONDS = float(os.getenv("REQUEST_PAUSE_SECONDS", "1.0"))  # stay far below the rate limit
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))  # the public API can be slow
 STATIONS_FILE = Path(os.getenv("STATIONS_FILE", Path(__file__).with_name("stations.txt")))
+# Remembers which VBB stop id each name in stations.txt resolved to, so restarts skip the lookups.
+# Must be writable; Airflow mounts the code read-only and points this to /tmp.
+STATIONS_CACHE = Path(os.getenv("STATIONS_CACHE", STATIONS_FILE.with_suffix(".cache.json")))
 RUN_ONCE = os.getenv("RUN_ONCE", "false").lower() == "true"            # handy for testing
 # Circuit breaker: after this many failed stations in a row the API is probably down,
 # so stop for this cycle and try again at the next one instead of retrying every station
@@ -58,8 +61,6 @@ def handle_stop(signum, frame):
     log.info("Stop signal received, finishing current run...")
 
 
-signal.signal(signal.SIGTERM, handle_stop)
-signal.signal(signal.SIGINT, handle_stop)
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +105,7 @@ def resolve_stations(conn):
         cur.execute("SELECT station_id, name FROM stations")
         known = {row[1]: row[0] for row in cur.fetchall()}
     # Also remember which query each station came from, so restarts skip the lookup
-    cache_path = STATIONS_FILE.with_suffix(".cache.json")
+    cache_path = STATIONS_CACHE
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
 
     stations = []
@@ -152,7 +153,10 @@ def resolve_stations(conn):
             )
         conn.commit()
         cache[query] = match["id"]
-        cache_path.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
+        try:
+            cache_path.write_text(json.dumps(cache, indent=2, ensure_ascii=False))
+        except OSError as exc:  # a read-only location must not stop the collection
+            log.warning("Could not save station cache to %s (%s)", cache_path, exc)
         stations.append((match["id"], match["name"]))
         log.info("Station '%s' -> %s (%s)", query, match["name"], match["id"])
 
@@ -263,6 +267,7 @@ def run_once(conn, stations):
         )
     conn.commit()
     log.info("Run done: %d stations ok, %d failed, %d departures saved", ok, failed, upserted)
+    return {"stations_ok": ok, "stations_failed": failed, "departures_saved": upserted}
 
 
 def connect_with_retry():
@@ -277,6 +282,10 @@ def connect_with_retry():
 
 
 def main():
+    # Stop cleanly on `docker compose stop` / Ctrl+C. Registered here, not at import time,
+    # so Airflow can import this module as a library without its signal handling being replaced.
+    signal.signal(signal.SIGTERM, handle_stop)
+    signal.signal(signal.SIGINT, handle_stop)
     conn = connect_with_retry()
     stations, missing = [], None
 

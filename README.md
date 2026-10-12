@@ -19,6 +19,7 @@ Berlin's GTFS timetable files only contain the *planned* schedule, not real dela
 - **Fault tolerance**: timeouts, retries with exponential backoff, and a circuit breaker keep the collector running when the public API is slow or down.
 - **Data quality built in**: every collector run is logged, so gaps, failed requests and realtime coverage can be measured.
 - **SQL analytics**: KPI queries with CTEs, window functions (`LAG`, `RANK`, rolling averages) and percentiles.
+- **Orchestration with Apache Airflow**: one DAG schedules the collection every 5 minutes, a nightly DAG runs data-quality checks and builds daily per-line statistics; failed checks show up as failed runs.
 - **Live dashboard**: a Streamlit app reads straight from PostgreSQL through a read-only user and refreshes every 5 minutes, served over HTTPS from a cloud VM.
 - **Tested**: unit tests for parsing, plus tests of the upsert logic, view and KPI queries against a real PostgreSQL in GitHub Actions.
 
@@ -26,8 +27,11 @@ Berlin's GTFS timetable files only contain the *planned* schedule, not real dela
 
 ```mermaid
 flowchart LR
-    API["VBB realtime API<br/>v6.vbb.transport.rest"] -->|every 5 min, 25 stations| C["Collector<br/>Python 3.12"]
+    AF{{"Apache Airflow<br/>scheduler"}} -->|every 5 min| C["Collector<br/>Python 3.12"]
+    API["VBB realtime API<br/>v6.vbb.transport.rest"] -->|25 stations| C
     C -->|upsert| DB[("PostgreSQL 16<br/>departures · stations · collector_runs")]
+    AF -->|nightly 03:15| Q["Data-quality checks<br/>+ daily line stats"]
+    Q --> DB
     DB --> V["View v_departures_clean"]
     V --> K["SQL KPIs<br/>sql/kpis.sql"]
     V --> E["CSV export<br/>Tableau / pandas"]
@@ -39,6 +43,7 @@ flowchart LR
 - **Reliability**: requests time out after 30 s and are retried with exponential backoff (2, 4, 8 s). A station that still fails is skipped and retried in the next cycle. After 3 failed stations in a row the collector assumes the API is down and waits for the next cycle (circuit breaker) instead of crashing.
 - **Database** (`db/init/01_schema.sql`): one row per departure (trip × station × planned time), a `stations` table, and a `collector_runs` table that logs every run.
 - **Analysis** (`sql/kpis.sql`): KPI queries built on the view `v_departures_clean`. Schema changes after the first start are applied as idempotent migrations (`db/migrations/`).
+- **Airflow** (`airflow/dags/`): `collect_departures` runs the collector every 5 minutes (no catch-up, never two runs at once, 10-minute timeout). `daily_quality_and_stats` checks the previous day at 03:15 (collector runs, station success rate, longest gap, realtime coverage, volume), stores the results in `data_quality_checks` and fails visibly if a check fails; independently it aggregates the day into `daily_line_stats`, the input for the planned delay prediction. A lean setup for a 1-CPU server: LocalExecutor, no Redis or Celery, metadata in its own database on the same PostgreSQL.
 - **Dashboard** (`dashboard/app.py`): KPIs, on-time % by mode and by hour of day, the lines with the highest average delay, a station map and the most delayed departures of the last hour. Filters for time window and transport mode.
 
 ## First results (preliminary)
@@ -85,7 +90,7 @@ Departures without realtime data are excluded from delay and on-time KPIs but co
 
 ## Tech stack
 
-Python 3.12 (requests, psycopg 3, pandas) · PostgreSQL 16 · SQL (CTEs, window functions) · Streamlit · Plotly · Docker Compose · Caddy · Oracle Cloud (Ubuntu, cloud-init) · pytest · ruff · GitHub Actions
+Python 3.12 (requests, psycopg 3, pandas) · PostgreSQL 16 · SQL (CTEs, window functions) · Apache Airflow 3 · Streamlit · Plotly · Docker Compose · Caddy · Oracle Cloud (Ubuntu, cloud-init) · pytest · ruff · GitHub Actions
 
 ## Run it yourself
 
@@ -110,7 +115,7 @@ The collector only runs while the computer is awake. On a Mac, keep it plugged i
 
 ### Run it 24/7 on a cloud server
 
-`deploy/cloud-init.yaml` sets up a fresh Ubuntu 24.04 server automatically: paste it into the "cloud config" / "user data" field when creating the server. It installs Docker, downloads this repository, generates random database passwords and runs `deploy/update.sh --public`, which also serves the dashboard over HTTPS at `https://<server-ip-with-dashes>.sslip.io` (a free certificate from Let's Encrypt via Caddy). All services restart on their own after a reboot. Ports 80 and 443 must be allowed in the cloud provider's firewall.
+`deploy/cloud-init.yaml` sets up a fresh Ubuntu 24.04 server automatically: paste it into the "cloud config" / "user data" field when creating the server. It installs Docker, downloads this repository, generates random database passwords and runs `deploy/update.sh --public`, which lets Airflow schedule the collection and serves the dashboard over HTTPS at `https://<server-ip-with-dashes>.sslip.io` (a free certificate from Let's Encrypt via Caddy). All services restart on their own after a reboot. Ports 80 and 443 must be allowed in the cloud provider's firewall.
 
 To update a running server to the latest code:
 ```bash
@@ -120,6 +125,11 @@ ssh ubuntu@<server-ip> "sudo /opt/berlin-transit-delays/deploy/update.sh --publi
 The database port is only reachable from the server itself. To query it from your laptop, open an SSH tunnel and connect to `localhost:5432` as usual (the password is in `/opt/berlin-transit-delays/.env` on the server):
 ```bash
 ssh -L 5432:localhost:5432 ubuntu@<server-ip>
+```
+
+The Airflow web UI is also only reachable through a tunnel. Open it with the command below, then go to http://localhost:8080 (user `admin`, password `AIRFLOW_ADMIN_PASSWORD` in the server's `.env`):
+```bash
+ssh -L 8080:localhost:8080 ubuntu@<server-ip>
 ```
 
 ### Using the data
@@ -156,6 +166,9 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 ## Project structure
 
 ```
+├── airflow/
+│   ├── dags/               # collect_departures (every 5 min), daily_quality_and_stats (nightly)
+│   └── Dockerfile
 ├── collector/
 │   ├── collector.py        # fetches departures and upserts them into PostgreSQL
 │   ├── stations.txt        # the 25 stations to track
@@ -171,8 +184,10 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 │   ├── cloud-init.yaml     # one-step setup of a cloud server
 │   ├── update.sh           # pull, migrate and restart with one command
 │   └── Caddyfile           # HTTPS for the public dashboard
-├── sql/kpis.sql            # KPI queries
-├── tests/                  # pytest: parsing, upsert logic, view, KPI queries
+├── sql/
+│   ├── kpis.sql            # KPI queries
+│   └── daily/              # SQL run by the nightly Airflow DAG
+├── tests/                  # pytest: parsing, upsert logic, view, KPI and nightly SQL
 ├── .github/workflows/      # CI: lint + tests against PostgreSQL 16
 └── docker-compose.yml
 ```
@@ -180,7 +195,7 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 ## Roadmap
 
 - [x] Step 1: Collect live departures into PostgreSQL
-- [ ] Step 2: Schedule the collection with Apache Airflow
+- [x] Step 2: Orchestrate the collection and nightly data-quality checks with Apache Airflow
 - [x] Step 3: Live dashboard (on-time %, worst lines and stations, delays by hour), deployed on a cloud VM
 - [ ] Step 4: Predict delays with machine learning and explain the predictions with SHAP
 
