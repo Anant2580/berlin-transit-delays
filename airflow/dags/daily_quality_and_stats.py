@@ -31,7 +31,7 @@ SQL_DIR = Path(os.getenv("SQL_DIR", "/opt/airflow/sql")) / "daily"
 QUALITY_CHECKS = {
     "collector_runs":        ("collector_runs", ">=", 250),       # 288 expected (one every 5 min)
     "station_success_pct":   ("station_success_pct", ">=", 95),   # share of station requests that worked
-    "longest_gap_min":       ("longest_gap_min", "<=", 15),       # no long collection outage
+    "longest_gap_min":       ("longest_gap_min", "<=", 15),       # no long time without data (outage)
     "realtime_coverage_pct": ("realtime_coverage_pct", ">=", 85), # departures with live delay data
     "departures":            ("departures", ">=", 10000),         # a normal day has far more
 }

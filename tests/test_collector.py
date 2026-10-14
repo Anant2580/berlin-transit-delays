@@ -103,6 +103,7 @@ def conn():
         cur.execute("DROP TABLE IF EXISTS departures, collector_runs, stations")
         cur.execute((ROOT / "db/init/01_schema.sql").read_text())
         cur.execute((ROOT / "db/migrations/002_modes_and_coverage.sql").read_text())
+        cur.execute((ROOT / "db/migrations/006_coverage_needs_data.sql").read_text())
         cur.execute("INSERT INTO stations (station_id, name) VALUES ('900120003', 'S Ostkreuz Bhf (Berlin)')")
     connection.commit()
     yield connection
@@ -191,3 +192,33 @@ def test_view_excludes_departures_planned_while_collector_was_down(conn):
         )
         cur.execute("SELECT trip_id, in_coverage FROM v_departures_clean ORDER BY trip_id")
         assert cur.fetchall() == [("COVERED", True), ("GAP", False)]
+
+
+def test_view_ignores_collector_runs_without_data(conn):
+    """A run during an API outage (stations_ok = 0) does not count as coverage."""
+    planned = datetime.now(BERLIN).replace(microsecond=0) - timedelta(hours=2)
+    save(conn, make_departure("OUTAGE", planned=planned.isoformat()))
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO collector_runs (started_at, finished_at, stations_ok, stations_failed, departures_upserted)"
+            " VALUES (%s, %s, 0, 25, 0)", (planned - timedelta(minutes=5), planned - timedelta(minutes=1)),
+        )
+        cur.execute("SELECT in_coverage FROM v_departures_clean")
+        assert cur.fetchone()[0] is False
+
+
+def test_run_once_counts_stations_skipped_by_circuit_breaker_as_failed(conn, monkeypatch):
+    """API down: the circuit breaker stops after 3 stations, but all 5 got no data."""
+    def api_down(path, params, retries=4):
+        raise collector.requests.ConnectionError("API unreachable")
+
+    monkeypatch.setattr(collector, "api_get", api_down)
+    monkeypatch.setattr(collector.time, "sleep", lambda seconds: None)
+    stations = [(f"90000000{i}", f"Station {i}") for i in range(5)]
+
+    result = collector.run_once(conn, stations)
+
+    assert result == {"stations_ok": 0, "stations_failed": 5, "departures_saved": 0}
+    with conn.cursor() as cur:
+        cur.execute("SELECT stations_ok, stations_failed FROM collector_runs")
+        assert cur.fetchall() == [(0, 5)]

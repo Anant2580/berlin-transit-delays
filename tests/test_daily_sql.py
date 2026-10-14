@@ -39,7 +39,7 @@ def conn():
         cur.execute("DROP VIEW IF EXISTS v_departures_clean")
         cur.execute("DROP TABLE IF EXISTS departures, collector_runs, stations, daily_line_stats, data_quality_checks")
         schema_files = ["db/init/01_schema.sql", "db/migrations/002_modes_and_coverage.sql",
-                        "db/migrations/004_daily_tables.sql"]
+                        "db/migrations/004_daily_tables.sql", "db/migrations/006_coverage_needs_data.sql"]
         for f in schema_files:
             cur.execute((ROOT / f).read_text())
         cur.execute("INSERT INTO stations (station_id, name) VALUES ('1', 'S Ostkreuz Bhf (Berlin)')")
@@ -100,9 +100,22 @@ def test_daily_line_stats_rerun_replaces_the_day(conn):
 
 
 def test_quality_metrics(conn):
-    runs, success_pct, longest_gap, departures, coverage = run_sql_file(conn, "quality_metrics.sql", DAY)[0]
-    assert runs == 25
+    runs, without_data, success_pct, longest_gap, departures, coverage = run_sql_file(
+        conn, "quality_metrics.sql", DAY)[0]
+    assert runs == 25 and without_data == 0
     assert float(success_pct) == pytest.approx(100 * (24 * 25 + 23) / (25 * 25))
     assert float(longest_gap) == pytest.approx(5.0)
     assert departures == 5
     assert float(coverage) == pytest.approx(80.0)  # 4 of 5 have realtime data or are cancelled
+
+
+def test_quality_metrics_treat_api_outage_as_gap(conn):
+    """Runs without data (API outage from 08:30 to 08:45) still exist, but the gap is measured."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE collector_runs SET stations_ok = 0, stations_failed = 25 WHERE started_at BETWEEN %s AND %s",
+            (datetime(2026, 10, 7, 8, 30, tzinfo=BERLIN), datetime(2026, 10, 7, 8, 45, tzinfo=BERLIN)),
+        )
+    runs, without_data, _, longest_gap, _, _ = run_sql_file(conn, "quality_metrics.sql", DAY)[0]
+    assert runs == 25 and without_data == 4
+    assert float(longest_gap) == pytest.approx(25.0)  # last data 08:25, next data 08:50

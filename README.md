@@ -82,8 +82,8 @@ Departures without realtime data are excluded from delay and on-time KPIs but co
 
 - **Delay = last realtime forecast.** The collector sees a departure up to 10 minutes before it leaves, so the stored delay is the last forecast before departure, not a measured final delay.
 - **Collecting it myself instead of using GTFS.** Public GTFS feeds only have planned times; realtime history is not published, so it has to be recorded.
-- **Gaps are expected and visible.** When the computer is off or the API is down, nothing is collected. `collector_runs` makes these gaps measurable (KPI query 2), so they can be excluded from analysis rather than silently biasing it.
-- **Excluding collection gaps.** A departure planned while the collector was down is only seen afterwards if it was late, which would bias delays upwards. The view marks departures with no collector run in the 15 minutes before them (`in_coverage`), and the dashboard leaves them out.
+- **Gaps are expected and visible.** When the collector is down or the VBB API has an outage, nothing is collected. Every run is logged in `collector_runs`, including runs that received no data, so these gaps are measurable (KPI query 2, nightly quality checks) and can be excluded from analysis rather than silently biasing it.
+- **Excluding collection gaps.** A departure planned while the collector was down is only seen afterwards if it was late, which would bias delays upwards. The view marks departures with no successful collector run in the 15 minutes before them (`in_coverage`), and the dashboard and daily statistics leave them out.
 - **Separate modes for special services.** Rail replacement buses (a bus running as "S7") and long-distance trains get their own categories instead of distorting regular bus and regional train figures.
 - **Least privilege.** The public dashboard connects with a read-only database user, and the database port is only reachable from the server itself.
 - **Station selection.** 25 stations chosen to cover hubs, U-Bahn, tram and outer areas; the list is easy to change in `collector/stations.txt`.

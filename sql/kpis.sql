@@ -16,19 +16,27 @@ GROUP BY service_date
 ORDER BY service_date;
 
 
--- 2) Collector health: failed station requests and gaps between runs
+-- 2) Collector health: failed station requests and the longest time without data.
+--    A run during an API outage is logged with stations_ok = 0, so gaps are measured
+--    between runs that received data.
 WITH runs AS (
     SELECT
         started_at,
+        stations_ok,
         stations_failed,
-        started_at - LAG(started_at) OVER (ORDER BY started_at) AS gap
+        -- time since the previous run that received data (only for runs that received data)
+        CASE WHEN stations_ok > 0 THEN
+            started_at - MAX(started_at) FILTER (WHERE stations_ok > 0)
+                         OVER (ORDER BY started_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+        END                                                   AS gap
     FROM collector_runs
 )
 SELECT
     DATE(started_at AT TIME ZONE 'Europe/Berlin')             AS day,
     COUNT(*)                                                  AS runs,
+    COUNT(*) FILTER (WHERE stations_ok = 0)                   AS runs_without_data,
     SUM(stations_failed)                                      AS failed_requests,
-    MAX(gap)                                                  AS longest_gap   -- big gaps = laptop asleep
+    MAX(gap)                                                  AS longest_gap   -- big gaps = collector down or API outage
 FROM runs
 GROUP BY 1
 ORDER BY 1;

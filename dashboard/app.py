@@ -134,11 +134,15 @@ def latest_delays(modes):
 def collector_health():
     return query("""
         WITH runs AS (
+            -- gap = time since the previous run that received data (API outages count as gaps)
             SELECT started_at, stations_ok, stations_failed,
-                   started_at - LAG(started_at) OVER (ORDER BY started_at) AS gap
+                   CASE WHEN stations_ok > 0 THEN
+                       started_at - MAX(started_at) FILTER (WHERE stations_ok > 0)
+                                    OVER (ORDER BY started_at ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+                   END AS gap
             FROM collector_runs WHERE started_at >= now() - INTERVAL '24 hours'
         )
-        SELECT (SELECT MAX(started_at) FROM collector_runs)                AS last_run,
+        SELECT (SELECT MAX(started_at) FROM collector_runs WHERE stations_ok > 0) AS last_run,
                (SELECT MIN(planned_time) FROM departures)                  AS data_since,
                COUNT(*)                                                     AS runs_24h,
                COALESCE(100.0 * SUM(stations_ok) / NULLIF(SUM(stations_ok + stations_failed), 0), 0)
@@ -200,7 +204,7 @@ def dashboard(window_label: str, selected_modes: list[str]):
         minutes_ago = (datetime.now(timezone.utc) - health.last_run).total_seconds() / 60
         status = "🟢 Live" if minutes_ago <= 15 else "🟠 Delayed"
         st.markdown(
-            f"**{status}** · last collector run {minutes_ago:.0f} min ago · "
+            f"**{status}** · last data received {minutes_ago:.0f} min ago · "
             f"data since {health.data_since:%d %b %Y} · page refreshes every {REFRESH_SECONDS // 60} min"
         )
 
@@ -333,7 +337,7 @@ def dashboard(window_label: str, selected_modes: list[str]):
         q1, q2, q3 = st.columns(3)
         q1.metric("Collector runs (24 h)", f"{int(health.runs_24h)}", help="Expected: 288 (one every 5 minutes)")
         q2.metric("Successful station requests (24 h)", fmt(health.success_pct_24h, "{:.1f}%"))
-        q3.metric("Longest gap between runs (24 h)", fmt(health.longest_gap_min_24h, "{:.0f} min"))
+        q3.metric("Longest gap without data (24 h)", fmt(health.longest_gap_min_24h, "{:.0f} min"))
         st.markdown(
             "- **Delay** is the last realtime forecast seen 0–10 minutes before departure.\n"
             "- **Replacement buses** (e.g. a bus running as \"S7\") and **long-distance trains** are "

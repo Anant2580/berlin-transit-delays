@@ -259,6 +259,11 @@ def run_once(conn, stations):
                 break
         time.sleep(REQUEST_PAUSE_SECONDS)
 
+    # Stations skipped by the circuit breaker got no data either, so they count as failed.
+    # Otherwise an API outage would look like "3 failed, 22 fine" in the quality checks.
+    if not stop_requested:
+        failed = len(stations) - ok
+
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO collector_runs (started_at, finished_at, stations_ok, stations_failed, departures_upserted)"

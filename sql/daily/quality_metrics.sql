@@ -1,4 +1,7 @@
 -- Data-quality metrics for one service day (Berlin time). Parameter: %(day)s
+-- A run "with data" is one where at least one station request worked. During a VBB API
+-- outage the collector still runs and logs a row, but receives nothing, so gaps are
+-- measured between runs WITH data.
 WITH day_bounds AS (
     SELECT (%(day)s::date)::timestamp AT TIME ZONE 'Europe/Berlin'                       AS day_start,
            ((%(day)s::date) + 1)::timestamp AT TIME ZONE 'Europe/Berlin'                 AS day_end
@@ -10,6 +13,7 @@ runs AS (
 gaps AS (
     SELECT EXTRACT(EPOCH FROM started_at - LAG(started_at) OVER (ORDER BY started_at)) / 60.0 AS gap_min
     FROM runs
+    WHERE stations_ok > 0
 ),
 deps AS (
     SELECT d.* FROM v_departures_clean d, day_bounds b
@@ -17,6 +21,7 @@ deps AS (
 )
 SELECT
     (SELECT COUNT(*) FROM runs)                                                     AS collector_runs,
+    (SELECT COUNT(*) FROM runs WHERE stations_ok = 0)                               AS runs_without_data,
     (SELECT 100.0 * SUM(stations_ok) / NULLIF(SUM(stations_ok + stations_failed), 0) FROM runs)
                                                                                     AS station_success_pct,
     (SELECT COALESCE(MAX(gap_min), 0) FROM gaps)                                    AS longest_gap_min,
