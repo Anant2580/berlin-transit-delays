@@ -167,10 +167,12 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 
 ```
 ├── airflow/
-│   ├── dags/               # collect_departures (every 5 min), daily_quality_and_stats (nightly)
+│   ├── dags/               # collect_departures (every 5 min), daily_quality_and_stats (nightly),
+│   │                       # compare_apis (experiment: public vs. own API instance)
 │   └── Dockerfile
 ├── collector/
 │   ├── collector.py        # fetches departures and upserts them into PostgreSQL
+│   ├── api_probe.py        # one request per station, used to compare two API instances
 │   ├── stations.txt        # the 25 stations to track
 │   ├── requirements.txt
 │   └── Dockerfile
@@ -186,6 +188,7 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 │   └── Caddyfile           # HTTPS for the public dashboard
 ├── sql/
 │   ├── kpis.sql            # KPI queries
+│   ├── api_probe_report.sql # results of the API comparison
 │   └── daily/              # SQL run by the nightly Airflow DAG
 ├── tests/                  # pytest: parsing, upsert logic, view, KPI and nightly SQL
 ├── .github/workflows/      # CI: lint + tests against PostgreSQL 16
@@ -197,11 +200,14 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 - [x] Step 1: Collect live departures into PostgreSQL
 - [x] Step 2: Orchestrate the collection and nightly data-quality checks with Apache Airflow
 - [x] Step 3: Live dashboard (on-time %, worst lines and stations, delays by hour), deployed on a cloud VM
+- [ ] In progress: run our own instance of the VBB API and measure whether it is more reliable than the shared public server
 - [ ] Step 4: Predict delays with machine learning and explain the predictions with SHAP
 
 ## Data source
 
 Realtime data from VBB (Verkehrsverbund Berlin-Brandenburg), accessed through the open API [v6.vbb.transport.rest](https://v6.vbb.transport.rest). No API key needed; the collector stays well below the 100 requests/minute limit.
+
+The public server is shared by many users and in October 2026 often answered with timeouts or HTTP 503 (up to a quarter of collection runs got no data on bad days). Because it is open source ([derhuerst/vbb-rest](https://github.com/derhuerst/vbb-rest)), the same API can also run as a container next to the collector (service `vbb-api`); the Airflow DAG `compare_apis` sends identical requests to both every 5 minutes, and `sql/api_probe_report.sql` compares success rate, response time and outages before the collector switches.
 
 ## Author
 

@@ -17,6 +17,7 @@ x-airflow-env: &airflow-env
   STATIONS_FILE: /opt/airflow/collector/stations.txt
   STATIONS_CACHE: /tmp/stations.cache.json
   SQL_DIR: /opt/airflow/sql
+  OWN_API_BASE: http://vbb-api:3000      # our own VBB API instance (experiment, DAG compare_apis)
 
 x-airflow-common: &airflow-common
   build: ./airflow
@@ -100,6 +101,19 @@ services:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+
+  # Our own instance of the open-source VBB API (github.com/derhuerst/vbb-rest, ISC license),
+  # the same code as the public server v6.vbb.transport.rest. The public server is shared by
+  # many users and often times out; this one asks the VBB backend only for our requests.
+  # Experiment for now: the DAG compare_apis measures both. Only reachable inside Docker.
+  vbb-api:
+    build: https://github.com/derhuerst/vbb-rest.git#6.0.7   # pinned release, built from source
+    image: vbb-rest:6.0.7
+    profiles: ["airflow", "own-api"]
+    restart: unless-stopped
+    environment:
+      HOSTNAME: vbb-api
+      PORT: 3000
 
   # ---------------------------------------------------------------------------
   # Apache Airflow (profile "airflow"): schedules the collection every 5 minutes and the
