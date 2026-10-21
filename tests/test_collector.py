@@ -222,3 +222,63 @@ def test_run_once_counts_stations_skipped_by_circuit_breaker_as_failed(conn, mon
     with conn.cursor() as cur:
         cur.execute("SELECT stations_ok, stations_failed FROM collector_runs")
         assert cur.fetchall() == [(0, 5)]
+
+
+# ---------------------------------------------------------------------------
+# API fallback: attempts alternate between our own API and the public server
+# ---------------------------------------------------------------------------
+class FakeResponse:
+    def __init__(self, status, payload=None):
+        self.status_code = status
+        self._payload = payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise collector.requests.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+def fake_get(outcomes, calls):
+    """session.get replacement: records the URL and returns/raises the next outcome."""
+    def get(url, params=None, timeout=None):
+        calls.append(url)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+    return get
+
+
+def test_api_get_falls_back_to_second_api(monkeypatch):
+    calls = []
+    monkeypatch.setattr(collector, "API_BASES", ["http://own", "https://public"])
+    monkeypatch.setattr(collector.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(collector.session, "get", fake_get(
+        [collector.requests.ConnectionError("own API down"), FakeResponse(200, {"departures": []})], calls))
+
+    assert collector.api_get("/stops/1/departures", {}) == {"departures": []}
+    assert calls == ["http://own/stops/1/departures", "https://public/stops/1/departures"]
+
+
+def test_api_get_alternates_until_retries_are_used_up(monkeypatch):
+    calls = []
+    monkeypatch.setattr(collector, "API_BASES", ["http://own", "https://public"])
+    monkeypatch.setattr(collector.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(collector.session, "get", fake_get([FakeResponse(503)] * 4, calls))
+
+    with pytest.raises(collector.requests.HTTPError):
+        collector.api_get("/locations", {})
+    assert calls == ["http://own/locations", "https://public/locations"] * 2
+
+
+def test_api_get_without_fallback_retries_the_same_api(monkeypatch):
+    calls = []
+    monkeypatch.setattr(collector, "API_BASES", ["https://public"])
+    monkeypatch.setattr(collector.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(collector.session, "get", fake_get(
+        [collector.requests.ReadTimeout("slow"), FakeResponse(200, [])], calls))
+
+    assert collector.api_get("/locations", {}) == []
+    assert calls == ["https://public/locations"] * 2

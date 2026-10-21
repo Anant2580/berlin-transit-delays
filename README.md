@@ -200,14 +200,16 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 - [x] Step 1: Collect live departures into PostgreSQL
 - [x] Step 2: Orchestrate the collection and nightly data-quality checks with Apache Airflow
 - [x] Step 3: Live dashboard (on-time %, worst lines and stations, delays by hour), deployed on a cloud VM
-- [ ] In progress: run our own instance of the VBB API and measure whether it is more reliable than the shared public server
+- [x] Run our own instance of the VBB API, measured against the shared public server, with the public server as fallback
 - [ ] Step 4: Predict delays with machine learning and explain the predictions with SHAP
 
 ## Data source
 
 Realtime data from VBB (Verkehrsverbund Berlin-Brandenburg), accessed through the open API [v6.vbb.transport.rest](https://v6.vbb.transport.rest). No API key needed; the collector stays well below the 100 requests/minute limit.
 
-The public server is shared by many users and in October 2026 often answered with timeouts or HTTP 503 (up to a quarter of collection runs got no data on bad days). Because it is open source ([derhuerst/vbb-rest](https://github.com/derhuerst/vbb-rest)), the same API can also run as a container next to the collector (service `vbb-api`); the Airflow DAG `compare_apis` sends identical requests to both every 5 minutes, and `sql/api_probe_report.sql` compares success rate, response time and outages before the collector switches.
+The public server is shared by many users and in October 2026 often answered with timeouts or HTTP 503 (up to a quarter of collection runs got no data on bad days). Because it is open source ([derhuerst/vbb-rest](https://github.com/derhuerst/vbb-rest)), the same API can also run as a container next to the collector (service `vbb-api`); the Airflow DAG `compare_apis` sends identical requests to both every 5 minutes, and `sql/api_probe_report.sql` compares success rate, response time and outages.
+
+First 24 hours (20–21 Oct 2026, 1,445 requests each): our own instance answered 100% of requests (median 0.13 s, 95th percentile 0.42 s), the public server 99.8% (median 0.27 s, 95th percentile 2.41 s), with the same data. The collection on the server therefore asks our own instance first and falls back to the public server when a request fails (`API_BASE`, `FALLBACK_API_BASE`). The comparison keeps running to see how both behave during the next outage.
 
 ## Author
 

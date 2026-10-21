@@ -8,7 +8,8 @@ approaches; each sighting updates the same row, so the stored delay is the
 latest realtime value before the vehicle leaves.
 
 Data source: VBB realtime data via https://v6.vbb.transport.rest
-(no API key needed, limit 100 requests/minute).
+(no API key needed, limit 100 requests/minute), or our own instance of the
+same open-source API (API_BASE / FALLBACK_API_BASE).
 """
 
 import json
@@ -27,6 +28,10 @@ import requests
 # Configuration (all can be overridden with environment variables)
 # ---------------------------------------------------------------------------
 API_BASE = os.getenv("API_BASE", "https://v6.vbb.transport.rest")
+# Optional second API with the same endpoints. On the server the collector asks our own
+# instance (service vbb-api) first and falls back to the public server if it fails.
+FALLBACK_API_BASE = os.getenv("FALLBACK_API_BASE", "")
+API_BASES = [base for base in (API_BASE, FALLBACK_API_BASE) if base]
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://transit:transit@localhost:5432/transit")
 POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "300"))  # 5 minutes
 LOOKAHEAD_MINUTES = int(os.getenv("LOOKAHEAD_MINUTES", "10"))           # departures window per request
@@ -67,9 +72,13 @@ def handle_stop(signum, frame):
 # API helpers
 # ---------------------------------------------------------------------------
 def api_get(path, params, retries=4):
-    """GET a JSON endpoint, retrying on network errors, 429 and 5xx with backoff."""
-    url = f"{API_BASE}{path}"
+    """
+    GET a JSON endpoint, retrying on network errors, 429 and 5xx with backoff.
+    With a fallback API configured, the attempts alternate between the two
+    (primary, fallback, primary, fallback), so one API being down costs no data.
+    """
     for attempt in range(1, retries + 1):
+        url = f"{API_BASES[(attempt - 1) % len(API_BASES)]}{path}"
         try:
             resp = session.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
             if resp.status_code == 429 or resp.status_code >= 500:
@@ -80,7 +89,7 @@ def api_get(path, params, retries=4):
             if attempt == retries:
                 raise
             wait = 2 ** attempt  # 2s, 4s, 8s
-            log.warning("Request to %s failed (%s), retry %d in %ds", path, exc, attempt, wait)
+            log.warning("Request to %s failed (%s), retry %d in %ds", url, exc, attempt, wait)
             time.sleep(wait)
 
 
