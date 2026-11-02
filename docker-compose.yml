@@ -102,8 +102,12 @@ services:
       - "443:443"
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${CADDY_SITES_DIR:-/opt/caddy-sites}:/etc/caddy/sites:ro   # site files of other apps on this server
       - caddy_data:/data
       - caddy_config:/config
+    networks:
+      - default
+      - edge          # shared only with the web apps Caddy serves; databases are never on it
 
   # Our own instance of the open-source VBB API (github.com/derhuerst/vbb-rest, ISC license),
   # the same code as the public server v6.vbb.transport.rest. The public server is shared by
@@ -164,6 +168,11 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+
+networks:
+  edge:
+    external: true    # created by deploy/update.sh
+    name: edge
 
 volumes:
   pgdata:

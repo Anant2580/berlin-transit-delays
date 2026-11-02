@@ -56,6 +56,11 @@ if [ "${1:-}" = "--public" ]; then
   set_env COMPOSE_PROFILES public,airflow
 fi
 
+# Shared HTTPS entry for other apps on this server: a Docker network only Caddy and those web apps
+# join, and a folder for their Caddy site files (both empty until another app adds itself)
+docker network inspect edge > /dev/null 2>&1 || docker network create edge > /dev/null
+mkdir -p "$(get_env CADDY_SITES_DIR | grep . || echo /opt/caddy-sites)"
+
 echo "==> Starting the database"
 docker compose up -d --wait db
 

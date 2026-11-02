@@ -4,3 +4,7 @@
 	encode gzip
 	reverse_proxy dashboard:8501
 }
+
+# Other small apps on this server bring their own site file (e.g. /opt/caddy-sites/wareneinsatz.caddy)
+# and join the shared Docker network "edge". This stack's data stays out of their reach.
+import sites/*.caddy
