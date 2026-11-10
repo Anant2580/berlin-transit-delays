@@ -20,6 +20,7 @@ Berlin's GTFS timetable files only contain the *planned* schedule, not real dela
 - **Data quality built in**: every collector run is logged, so gaps, failed requests and realtime coverage can be measured.
 - **SQL analytics**: KPI queries with CTEs, window functions (`LAG`, `RANK`, rolling averages) and percentiles.
 - **Orchestration with Apache Airflow**: one DAG schedules the collection every 5 minutes, a nightly DAG runs data-quality checks and builds daily per-line statistics; failed checks show up as failed runs.
+- **Machine learning with honest evaluation**: a LightGBM model predicts which departures will be more than 3 minutes late, tested on a week it never saw and compared with two baselines; SHAP explains what drives the predictions. Retrained every Monday by Airflow.
 - **Live dashboard**: a Streamlit app reads straight from PostgreSQL through a read-only user and refreshes every 5 minutes, served over HTTPS from a cloud VM.
 - **Tested**: unit tests for parsing, plus tests of the upsert logic, view and KPI queries against a real PostgreSQL in GitHub Actions.
 
@@ -32,6 +33,9 @@ flowchart LR
     C -->|upsert| DB[("PostgreSQL 16<br/>departures · stations · collector_runs")]
     AF -->|nightly 03:15| Q["Data-quality checks<br/>+ daily line stats"]
     Q --> DB
+    AF -->|Mondays 04:30| ML["Delay model<br/>LightGBM + SHAP"]
+    DB --> ML
+    ML -->|metrics, importance| DB
     DB --> V["View v_departures_clean"]
     V --> K["SQL KPIs<br/>sql/kpis.sql"]
     V --> E["CSV export<br/>Tableau / pandas"]
@@ -66,6 +70,37 @@ First observations:
 - Long-distance trains (ICE/IC) appear at some stations with delays of up to 84 minutes. They are few but distort averages, so they should be reported separately.
 
 These numbers come from less than one day of data and will be updated once a few weeks of continuous data are collected.
+
+## Predicting late departures (machine learning)
+
+**Question:** will a departure be more than 3 minutes late? (8.3% of departures in the test week were.)
+
+**Features**, all known *before* the departure:
+- timetable: line, direction, station, transport mode, hour of day, weekday
+- recent delays: average delay, share late and number of departures of the same line and of the same station in the 60 minutes ending **30 minutes before** the departure. The stored delay is the last realtime value seen, which can still change until a train has left; departures planned at least 30 minutes earlier have almost always left, so their delays are final. A test checks that nothing newer is used (no data leakage).
+
+**Evaluation:** a time split, never a random one. Training: 7 Oct – 26 Oct 2026, validation (early stopping): 27 Oct – 2 Nov, **test: 3 – 9 Nov (350,587 departures, never seen in training)**. The model is compared with two baselines:
+
+| Approach | ROC-AUC | PR-AUC | Late departures caught in the riskiest 10% |
+|---|---|---|---|
+| Guess the average | 0.50 | 0.08 | 11% |
+| History: late share of the line at that hour | 0.76 | 0.26 | 36% |
+| LightGBM, timetable features only | 0.81 | 0.33 | 42% |
+| **LightGBM, + recent delays** | **0.86** | **0.41** | **49%** |
+
+Flagging the 10% of departures the model rates riskiest catches about half of all late departures; 41% of the flagged ones are really late (base rate: 8%).
+
+![Model compared with baselines](docs/ml_model_comparison.png)
+
+**Explanation (SHAP):** LightGBM computes exact TreeSHAP values itself (`pred_contrib=True`), so production needs no extra library. The direction of travel matters most: together with the line it describes the route (dropping it lowers ROC-AUC from 0.86 to 0.84). Next comes how late the line was 30–90 minutes earlier (delays persist), then the line itself, the hour of day and the station.
+
+![SHAP feature importance](docs/ml_feature_importance.png)
+
+**In production:** the Airflow DAG `weekly_delay_model` retrains every Monday on the last 8 weeks, evaluates on the newest week and writes metrics and SHAP importance to PostgreSQL (`ml_model_runs`, `ml_model_metrics`, `ml_feature_importance`); the dashboard shows the latest run. Data is read with `COPY … TO STDOUT` straight into pandas, which keeps memory low on the 6 GB server.
+
+**Limitations:** the test week is one week of autumn data; holidays, winter weather and timetable changes are not in the training data yet. Delays are recorded at 25 stations only, so "recent delay" means recent delay at those stations.
+
+Run it on a CSV export: `pip install -r ml/requirements.txt`, then `python -m ml.train --csv departures.csv.gz --out ml/output` and `python -m ml.plots ml/output/results.json docs/`.
 
 ## KPI definitions
 
@@ -168,7 +203,7 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 ```
 ├── airflow/
 │   ├── dags/               # collect_departures (every 5 min), daily_quality_and_stats (nightly),
-│   │                       # compare_apis (experiment: public vs. own API instance)
+│   │                       # weekly_delay_model (Mondays), compare_apis (public vs. own API)
 │   └── Dockerfile
 ├── collector/
 │   ├── collector.py        # fetches departures and upserts them into PostgreSQL
@@ -182,6 +217,11 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 ├── db/
 │   ├── init/01_schema.sql  # tables, indexes and the analysis view (first start)
 │   └── migrations/         # later schema changes, applied by deploy/update.sh
+├── docs/                   # charts used in this README
+├── ml/
+│   ├── features.py         # leakage-safe features (timetable + recent delays)
+│   ├── train.py            # time split, baselines, LightGBM, evaluation, SHAP, results to PostgreSQL
+│   └── plots.py            # README charts
 ├── deploy/
 │   ├── cloud-init.yaml     # one-step setup of a cloud server
 │   ├── update.sh           # pull, migrate and restart with one command
@@ -190,7 +230,7 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 │   ├── kpis.sql            # KPI queries
 │   ├── api_probe_report.sql # results of the API comparison
 │   └── daily/              # SQL run by the nightly Airflow DAG
-├── tests/                  # pytest: parsing, upsert logic, view, KPI and nightly SQL
+├── tests/                  # pytest: parsing, upsert logic, view, KPI and nightly SQL, ML pipeline
 ├── .github/workflows/      # CI: lint + tests against PostgreSQL 16
 └── docker-compose.yml
 ```
@@ -201,7 +241,8 @@ pytest                     # database tests are skipped unless TEST_DATABASE_URL
 - [x] Step 2: Orchestrate the collection and nightly data-quality checks with Apache Airflow
 - [x] Step 3: Live dashboard (on-time %, worst lines and stations, delays by hour), deployed on a cloud VM
 - [x] Run our own instance of the VBB API, measured against the shared public server, with the public server as fallback
-- [ ] Step 4: Predict delays with machine learning and explain the predictions with SHAP
+- [x] Step 4: Predict late departures with machine learning (LightGBM), explained with SHAP, retrained weekly by Airflow
+- [ ] Next: live risk scores for the upcoming departures on the dashboard; more seasons of data
 
 ## Data source
 

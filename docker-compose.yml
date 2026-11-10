@@ -17,6 +17,7 @@ x-airflow-env: &airflow-env
   STATIONS_FILE: /opt/airflow/collector/stations.txt
   STATIONS_CACHE: /tmp/stations.cache.json
   SQL_DIR: /opt/airflow/sql
+  MODEL_DIR: /opt/airflow/models           # trained delay model (DAG weekly_delay_model)
   # The collection asks our own VBB API instance first, the public server only if that fails
   API_BASE: http://vbb-api:3000
   FALLBACK_API_BASE: https://v6.vbb.transport.rest
@@ -32,7 +33,9 @@ x-airflow-common: &airflow-common
     - ./airflow/dags:/opt/airflow/dags:ro
     - ./collector:/opt/airflow/collector:ro
     - ./sql:/opt/airflow/sql:ro
+    - ./ml:/opt/airflow/ml:ro
     - airflow_logs:/opt/airflow/logs
+    - ml_models:/opt/airflow/models
   depends_on:
     db:
       condition: service_healthy
@@ -179,3 +182,4 @@ volumes:
   caddy_data:
   caddy_config:
   airflow_logs:
+  ml_models:

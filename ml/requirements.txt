@@ -1,0 +1,6 @@
+# Same versions as the Airflow image (scikit-learn and pandas come from Airflow's constraints file)
+lightgbm==4.7.0
+scikit-learn==1.9.1
+pandas==3.0.5
+psycopg[binary]==3.2.3
+matplotlib   # only for ml/plots.py (README charts), not needed on the server

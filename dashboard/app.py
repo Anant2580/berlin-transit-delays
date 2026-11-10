@@ -152,6 +152,30 @@ def collector_health():
     """).iloc[0]
 
 
+def latest_model():
+    """Latest weekly training run of the delay model: metrics per model and SHAP importance.
+    Returns (None, None, None) until the first run, or where the ML tables don't exist yet."""
+    try:
+        run = query("SELECT * FROM ml_model_runs ORDER BY run_id DESC LIMIT 1")
+        if run.empty:
+            return None, None, None
+        run_id = int(run.run_id.iloc[0])
+        metrics = query("SELECT * FROM ml_model_metrics WHERE run_id = %s", (run_id,)).set_index("model")
+        importance = query("SELECT rank, label, mean_abs_shap FROM ml_feature_importance "
+                           "WHERE run_id = %s ORDER BY rank", (run_id,))
+        return run.iloc[0], metrics, importance
+    except psycopg.Error:
+        return None, None, None
+
+
+MODEL_LABELS = {
+    "base_rate": "Guess the average",
+    "history_line_hour": "History: line × hour",
+    "lightgbm_schedule": "Model: timetable only",
+    "lightgbm_full": "Model: + recent delays",
+}
+
+
 # ---------------------------------------------------------------------------
 # Chart helpers
 # ---------------------------------------------------------------------------
@@ -331,6 +355,53 @@ def dashboard(window_label: str, selected_modes: list[str]):
             df, hide_index=True, width="stretch",
             column_config={"delay_min": st.column_config.NumberColumn("delay", format="%.0f min")},
         )
+
+    # Machine learning: which departures will be late, and why
+    run, metrics, importance = latest_model()
+    if run is not None and "lightgbm_full" in metrics.index:
+        st.divider()
+        st.subheader("Predicting late departures (machine learning)")
+        full, history = metrics.loc["lightgbm_full"], metrics.loc["history_line_hour"]
+        st.caption(
+            "A LightGBM model predicts whether a departure will be more than 3 minutes late, using the "
+            "timetable (line, direction, station, hour, weekday) and how late the line and station were "
+            "30–90 minutes earlier. It is retrained every Monday and tested on the most recent week, "
+            f"which it never saw in training ({run.test_from:%d %b} – {run.test_to:%d %b}, "
+            f"{int(run.n_test):,} departures)."
+        )
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Late departures caught in the riskiest 10%", f"{full.recall_top10 * 100:.0f}%",
+                  f"{(full.recall_top10 - history.recall_top10) * 100:+.0f} pts vs. history baseline",
+                  help="Flag the 10% of departures the model rates riskiest: share of all late departures among them")
+        m2.metric("ROC-AUC", f"{full.roc_auc:.2f}", f"{full.roc_auc - history.roc_auc:+.2f} vs. history baseline",
+                  help="0.5 = random guessing, 1.0 = perfect ranking of late vs. on-time departures")
+        m3.metric("Late departures in the test week", f"{run.late_rate_test * 100:.1f}%")
+
+        ml_left, ml_right = st.columns(2)
+        with ml_left:
+            st.markdown("**What drives the prediction (SHAP)**")
+            top = importance.head(8).iloc[::-1]
+            fig = go.Figure(go.Bar(
+                x=top.mean_abs_shap, y=top.label, orientation="h", marker_color=BLUE,
+                hovertemplate="%{y}: %{x:.2f}<extra></extra>",
+            ))
+            st.plotly_chart(style(fig, height=320), width="stretch")
+            st.caption("Mean absolute SHAP value: how strongly a feature moves the prediction on average.")
+        with ml_right:
+            st.markdown("**Compared with simpler approaches**")
+            order = [m for m in ["base_rate", "history_line_hour", "lightgbm_schedule", "lightgbm_full"]
+                     if m in metrics.index]
+            comp = metrics.loc[order]
+            fig = go.Figure(go.Bar(
+                x=comp.recall_top10 * 100, y=[MODEL_LABELS[m] for m in order], orientation="h",
+                marker_color=[BLUE if m == "lightgbm_full" else SEQUENTIAL_BLUE[0] for m in order],
+                customdata=comp.roc_auc, text=[f"{v * 100:.0f}%" for v in comp.recall_top10],
+                textposition="outside",
+                hovertemplate="%{y}<br>Caught: %{x:.0f}%<br>ROC-AUC: %{customdata:.2f}<extra></extra>",
+            ))
+            fig.update_xaxes(range=[0, max(comp.recall_top10) * 130])
+            st.plotly_chart(style(fig, height=320), width="stretch")
+            st.caption("Share of all late departures among the 10% each approach rates riskiest.")
 
     # Data quality
     with st.expander("Data quality and method"):

@@ -9,3 +9,4 @@ select = ["E", "F", "W", "B", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]          # so tests can import the ml package
